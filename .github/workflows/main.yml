@@ -1,4 +1,4 @@
-name: Auto Render Deep Space Video
+name: Auto Render Oceanic Secrets Video
 
 on:
   repository_dispatch:
