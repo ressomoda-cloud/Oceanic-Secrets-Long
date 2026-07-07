@@ -12,12 +12,13 @@ pexels_key = os.environ.get('PEXELS_API_KEY')
 chat_id = os.environ.get('CHAT_ID')
 telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
 
-# 👇 Yahan apna channel name set karein 👇
-channel_name = "Deep Space®" 
+# 👇 Channel Name 👇
+channel_name = "Oceanic Secrets" 
 
 print(f"DEBUG: Processing {len(scenes_data)} scenes async...")
 
-FALLBACK_KEYWORDS = ["abstract motion background", "technology concept", "smartphone interface", "digital data animation", "smooth gradient"]
+# 👇 YAHAN BAS KEYWORDS UPDATE KIYE HAIN AAPKE NAYE TOPIC KE LIYE 👇
+FALLBACK_KEYWORDS = ["dark ocean waves", "underwater abstract", "deep sea background", "ocean floor", "mysterious underwater"]
 
 TEMP_DIR = "/dev/shm" if os.path.exists("/dev/shm") else os.getcwd()
 
@@ -61,7 +62,7 @@ async def process_scene(session, i, scene):
         tts_success = False
         for attempt in range(3):
             try:
-                # 👇 UPDATE: Changed from Hindi to USA English Voice 👇
+                # Same ChristopherNeural voice jaisa aapko chahiye tha
                 communicate = edge_tts.Communicate(text_line, "en-US-ChristopherNeural", rate="+10%")
                 await asyncio.wait_for(communicate.save(raw_mp3), timeout=15.0)
                 tts_success = True
@@ -191,7 +192,7 @@ async def main_pipeline():
         
         run_id = os.environ.get('GITHUB_RUN_ID', str(int(time.time())))
         tag_name = f"vid-{run_id}"
-        repo_name = "deepspaceusa-cyber/Deep-Space-USA-Long" 
+        repo_name = "ressomoda-cloud/Oceanic-Secrets-Long" 
         
         try:
             cmd = ['gh', 'release', 'create', tag_name, final_video, '--repo', repo_name, '--notes', 'Automated Video Render']
