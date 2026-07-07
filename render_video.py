@@ -13,7 +13,7 @@ chat_id = os.environ.get('CHAT_ID')
 telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
 
 # 👇 Channel Name 👇
-channel_name = "Oceanic Secrets" 
+channel_name = "Oceanic Secrets®" 
 
 print(f"DEBUG: Processing {len(scenes_data)} scenes async...")
 
