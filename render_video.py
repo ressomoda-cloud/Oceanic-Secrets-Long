@@ -1,4 +1,5 @@
 import os, sys, json, subprocess, time, random, asyncio, re, string
+import urllib.parse
 import aiohttp
 import edge_tts
 import shutil
@@ -12,13 +13,15 @@ pexels_key = os.environ.get('PEXELS_API_KEY')
 chat_id = os.environ.get('CHAT_ID')
 telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
 
-# 👇 Channel Name 👇
+# 👇 USA Channel Name 👇
 channel_name = "Oceanic Secrets®" 
 
 print(f"DEBUG: Processing {len(scenes_data)} scenes async...")
 
-# 👇 YAHAN BAS KEYWORDS UPDATE KIYE HAIN AAPKE NAYE TOPIC KE LIYE 👇
-FALLBACK_KEYWORDS = ["dark ocean waves", "underwater abstract", "deep sea background", "ocean floor", "mysterious underwater"]
+# --- SMART DYNAMIC FALLBACK KEYWORDS ---
+# GitHub Actions se jo bhi fallback theme aayegi, yeh usey list mein badal dega.
+fallback_env = os.environ.get('FALLBACK_KEYWORDS', 'dark ocean waves, underwater abstract, deep sea background, ocean floor, mysterious underwater')
+FALLBACK_KEYWORDS = [kw.strip() for kw in fallback_env.split(',')]
 
 TEMP_DIR = "/dev/shm" if os.path.exists("/dev/shm") else os.getcwd()
 
@@ -28,10 +31,16 @@ async def fetch_pexels_video(session, keyword):
         for attempt in range(2):
             try:
                 await asyncio.sleep(random.uniform(0.1, 0.5))
-                random_page = random.randint(1, 5) 
-                url = f"https://api.pexels.com/videos/search?query={query}&per_page=5&page={random_page}&orientation=landscape&size=large"
+                # Jab attempts badhein toh safe page=1 rakho taaki khali result na aaye
+                random_page = random.randint(1, 5) if attempt == 0 else 1 
+                url = f"https://api.pexels.com/videos/search?query={urllib.parse.quote(query)}&per_page=5&page={random_page}&orientation=landscape&size=large"
                 
                 async with session.get(url, headers={"Authorization": pexels_key}, timeout=10) as response:
+                    # [IMPROVED]: Added Rate Limit (429) Handling
+                    if response.status == 429:
+                        await asyncio.sleep(2)
+                        continue
+                        
                     if response.status == 200:
                         res = await response.json()
                         if res.get('videos') and len(res['videos']) > 0:
@@ -62,7 +71,7 @@ async def process_scene(session, i, scene):
         tts_success = False
         for attempt in range(3):
             try:
-                # Same ChristopherNeural voice jaisa aapko chahiye tha
+                # 👇 USA English Voice for storytelling 👇
                 communicate = edge_tts.Communicate(text_line, "en-US-ChristopherNeural", rate="+10%")
                 await asyncio.wait_for(communicate.save(raw_mp3), timeout=15.0)
                 tts_success = True
@@ -81,20 +90,31 @@ async def process_scene(session, i, scene):
         dur = max(1.0, raw_dur - 0.2) 
         fade_out = max(0, dur - 0.5)
         
-        vid_url = await fetch_pexels_video(session, keyword)
+        # --- Visual Pipeline with Retries and 200KB Size Check ---
         is_valid_video = False
+        vid_url = await fetch_pexels_video(session, keyword)
         
-        if vid_url:
-            try:
-                async with session.get(vid_url, timeout=15) as resp:
-                    if resp.status == 200:
-                        vid_bytes = await resp.read()
-                        if len(vid_bytes) > 50000: 
-                            with open(vid_path, "wb") as f:
-                                f.write(vid_bytes)
-                            is_valid_video = True
-            except Exception as e:
-                print(f"Failed to download video for scene {i}: {str(e)}")
+        for download_attempt in range(3):
+            if not vid_url:
+                vid_url = await fetch_pexels_video(session, random.choice(FALLBACK_KEYWORDS))
+                
+            if vid_url:
+                try:
+                    async with session.get(vid_url, timeout=15) as resp:
+                        if resp.status == 200:
+                            vid_bytes = await resp.read()
+                            # [IMPROVED]: Increased size threshold to 200KB to strictly avoid corrupt/small files
+                            if len(vid_bytes) > 200000: 
+                                with open(vid_path, "wb") as f:
+                                    f.write(vid_bytes)
+                                is_valid_video = True
+                                break # Download successful, break loop
+                            else:
+                                print(f"Video file too small ({len(vid_bytes)} bytes) on attempt {download_attempt+1}, discarding.")
+                except Exception as e:
+                    print(f"Failed to download video for scene {i} on attempt {download_attempt+1}: {str(e)}")
+                    
+            vid_url = None # Reset for fallback fetch
 
         pop_path = os.path.abspath("pop.mp3")
         has_pop = os.path.exists(pop_path)
@@ -167,7 +187,6 @@ async def main_pipeline():
 
         bgm_path = os.path.abspath("bgm.mp3")
         if os.path.exists(bgm_path):
-            # 👇 YAHAN BGM VOLUME 0.4 SE 0.15 KAR DIYA GAYA HAI 👇
             bgm_cmd = [
                 'ffmpeg', '-y', '-i', raw_video, '-stream_loop', '-1', '-i', bgm_path,
                 '-filter_complex', '[0:a]volume=1.0[voice];[1:a]volume=0.15[bgm];[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0[aout_mix];[aout_mix]volume=2.0[aout]',
@@ -186,14 +205,16 @@ async def main_pipeline():
             if os.path.exists(r['aud']): os.remove(r['aud'])
 
         # ==========================================
-        # PHASE 3: GITHUB RELEASES (THE ULTIMATE FIX)
+        # PHASE 3: GITHUB RELEASES
         # ==========================================
         video_link = None
         print("\n🚀 Uploading Video directly to GitHub Releases...")
         
         run_id = os.environ.get('GITHUB_RUN_ID', str(int(time.time())))
         tag_name = f"vid-{run_id}"
-        repo_name = "ressomoda-cloud/Oceanic-Secrets-Long" 
+        
+        # 👇 Repo name updated as per screenshot and workflow 👇
+        repo_name = os.environ.get('GITHUB_REPOSITORY', "ressomoda-cloud/Oceanic-Secrets-Long") 
         
         try:
             cmd = ['gh', 'release', 'create', tag_name, final_video, '--repo', repo_name, '--notes', 'Automated Video Render']
