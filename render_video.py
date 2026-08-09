@@ -25,10 +25,18 @@ FALLBACK_KEYWORDS = [kw.strip() for kw in fallback_env.split(',')]
 
 TEMP_DIR = "/dev/shm" if os.path.exists("/dev/shm") else os.getcwd()
 
+# 👇 NAYA FLAG: Pexels API block hone par track karne ke liye 👇
+pexels_rate_limit_hit = False
+
 async def fetch_pexels_video(session, keyword):
+    global pexels_rate_limit_hit
+    if pexels_rate_limit_hit: return None
+    
     queries_to_try = [keyword] + FALLBACK_KEYWORDS
     for query in queries_to_try:
+        if pexels_rate_limit_hit: break
         for attempt in range(2):
+            if pexels_rate_limit_hit: break
             try:
                 await asyncio.sleep(random.uniform(0.1, 0.5))
                 # Jab attempts badhein toh safe page=1 rakho taaki khali result na aaye
@@ -36,10 +44,11 @@ async def fetch_pexels_video(session, keyword):
                 url = f"https://api.pexels.com/videos/search?query={urllib.parse.quote(query)}&per_page=5&page={random_page}&orientation=landscape&size=large"
                 
                 async with session.get(url, headers={"Authorization": pexels_key}, timeout=10) as response:
-                    # [IMPROVED]: Added Rate Limit (429) Handling
+                    # [IMPROVED]: Added Rate Limit (429) Handling & Killswitch
                     if response.status == 429:
-                        await asyncio.sleep(2)
-                        continue
+                        print("🚨 Pexels API Rate Limit (429) HIT! Aborting API to prevent black screens.")
+                        pexels_rate_limit_hit = True
+                        break
                         
                     if response.status == 200:
                         res = await response.json()
@@ -63,7 +72,8 @@ async def process_scene(session, i, scene):
     text_line = scene.get('text', '').strip()
     if not text_line: return None
     
-    scene_filename = os.path.join(TEMP_DIR, f"scene_{i}.mp4")
+    # 👇 YAHAN .mp4 KI JAGAH .ts FORMAT KIYA GAYA HAI TIMESTAMPS FIX KARNE KE LIYE 👇
+    scene_filename = os.path.join(TEMP_DIR, f"scene_{i}.ts")
     raw_mp3 = os.path.join(TEMP_DIR, f"raw_a_{i}.mp3")
     vid_path = os.path.join(TEMP_DIR, f"raw_vid_{i}.mp4")
     
@@ -107,6 +117,9 @@ async def process_scene(session, i, scene):
                             if len(vid_bytes) > 200000: 
                                 with open(vid_path, "wb") as f:
                                     f.write(vid_bytes)
+                                # 👇 MASTER RECYCLER BACKUP SAVE KIYA GAYA 👇
+                                with open(os.path.join(TEMP_DIR, "master_fallback.mp4"), "wb") as f:
+                                    f.write(vid_bytes)
                                 is_valid_video = True
                                 break # Download successful, break loop
                             else:
@@ -116,6 +129,16 @@ async def process_scene(session, i, scene):
                     
             vid_url = None # Reset for fallback fetch
 
+        # 👇 IF PEXELS FAILS OR API HITS LIMIT, USE THE BACKUP INSTEAD OF BLACK SCREEN 👇
+        if not is_valid_video:
+            master_fallback = os.path.join(TEMP_DIR, "master_fallback.mp4")
+            if os.path.exists(master_fallback):
+                try:
+                    shutil.copy(master_fallback, vid_path)
+                    is_valid_video = True
+                    print(f"🔄 Recycled master fallback for scene {i} to avoid black screen.")
+                except: pass
+
         pop_path = os.path.abspath("pop.mp3")
         has_pop = os.path.exists(pop_path)
 
@@ -124,6 +147,7 @@ async def process_scene(session, i, scene):
             if has_pop: cmd += ['-i', pop_path]
             v_filter = f"[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,format=yuv420p,fps=30,unsharp=5:5:0.5:5:5:0.0,eq=contrast=1.1:saturation=1.25,drawtext=text='{channel_name}':fontcolor=white@0.5:fontsize=48:x=w-tw-50:y=h-th-50,fade=t=in:st=0:d=0.5,fade=t=out:st={fade_out}:d=0.5[v]"
         else:
+            # Backup fail hone par aakhiri rasta (Rare case)
             cmd = ['ffmpeg', '-y', '-f', 'lavfi', '-i', f'color=c=#151525:s=1920x1080:d={dur}', '-ss', '0.2', '-i', raw_mp3]
             if has_pop: cmd += ['-i', pop_path]
             v_filter = f"[0:v]drawtext=text='{channel_name}':fontcolor=white@0.5:fontsize=48:x=w-tw-50:y=h-th-50,fade=t=in:st=0:d=0.5,fade=t=out:st={fade_out}:d=0.5[v]"
@@ -141,6 +165,7 @@ async def process_scene(session, i, scene):
             '-map', '[v]', '-map', a_map,
             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
             '-c:a', 'aac', '-b:a', '192k', '-pix_fmt', 'yuv420p',
+            '-bsf:v', 'h264_mp4toannexb', '-f', 'mpegts', # 👈 TS Muxing added for timestamps fix
             '-t', str(dur), scene_filename
         ]
             
@@ -177,29 +202,33 @@ async def main_pipeline():
         with open(vid_list_path, "w") as f:
             for r in results: f.write(f"file '{r['vid']}'\n")
 
-        raw_video = os.path.join(TEMP_DIR, 'raw_video.mp4')
+        # 👇 TS FORMAT USE KIYA GAYA HAI TAक्यूKI MP4 CONCATENATION BREAK NA HO 👇
+        raw_video = os.path.join(TEMP_DIR, 'raw_video.ts')
         final_video = 'final_video.mp4' 
         
         # ==========================================
-        # PHASE 2: FLAWLESS AUDIO MUXING
+        # PHASE 2: FLAWLESS AUDIO MUXING WITH GENPTS
         # ==========================================
-        await run_ffmpeg_async(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', vid_list_path, '-c', 'copy', raw_video])
+        await run_ffmpeg_async(['ffmpeg', '-y', '-fflags', '+genpts', '-f', 'concat', '-safe', '0', '-i', vid_list_path, '-c', 'copy', '-async', '1', raw_video])
 
         bgm_path = os.path.abspath("bgm.mp3")
         if os.path.exists(bgm_path):
             bgm_cmd = [
-                'ffmpeg', '-y', '-i', raw_video, '-stream_loop', '-1', '-i', bgm_path,
+                'ffmpeg', '-y', '-fflags', '+genpts', '-i', raw_video, '-stream_loop', '-1', '-i', bgm_path,
                 '-filter_complex', '[0:a]volume=1.0[voice];[1:a]volume=0.15[bgm];[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0[aout_mix];[aout_mix]volume=2.0[aout]',
                 '-map', '0:v', '-map', '[aout]',
                 '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest', final_video
             ]
             await run_ffmpeg_async(bgm_cmd)
         else:
-            shutil.move(raw_video, final_video)
+            remux_cmd = ['ffmpeg', '-y', '-fflags', '+genpts', '-i', raw_video, '-c', 'copy', final_video]
+            await run_ffmpeg_async(remux_cmd)
 
         # Cleanup
         if os.path.exists(vid_list_path): os.remove(vid_list_path)
         if os.path.exists(raw_video): os.remove(raw_video)
+        master_fallback = os.path.join(TEMP_DIR, "master_fallback.mp4")
+        if os.path.exists(master_fallback): os.remove(master_fallback)
         for r in results:
             if os.path.exists(r['vid']): os.remove(r['vid'])
             if os.path.exists(r['aud']): os.remove(r['aud'])
